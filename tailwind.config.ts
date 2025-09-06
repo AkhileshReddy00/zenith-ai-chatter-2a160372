@@ -57,6 +57,22 @@ export default {
           border: "hsl(var(--sidebar-border))",
           ring: "hsl(var(--sidebar-ring))",
         },
+        chat: {
+          user: "hsl(var(--chat-user))",
+          assistant: "hsl(var(--chat-assistant))",
+          hover: "hsl(var(--chat-hover))",
+        },
+      },
+      backgroundImage: {
+        'gradient-primary': 'linear-gradient(135deg, hsl(var(--gradient-primary)), hsl(var(--gradient-secondary)))',
+        'gradient-secondary': 'linear-gradient(135deg, hsl(var(--gradient-secondary)), hsl(var(--gradient-tertiary)))',
+        'gradient-radial': 'radial-gradient(circle at 30% 107%, hsl(var(--gradient-primary)) 0%, hsl(var(--gradient-secondary)) 45%, hsl(var(--gradient-tertiary)) 90%)',
+      },
+      boxShadow: {
+        'sm': 'var(--shadow-sm)',
+        'md': 'var(--shadow-md)',
+        'lg': 'var(--shadow-lg)',
+        'xl': 'var(--shadow-xl)',
       },
       borderRadius: {
         lg: "var(--radius)",
