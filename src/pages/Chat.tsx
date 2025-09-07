@@ -5,6 +5,7 @@ import { useToast } from "@/components/ui/use-toast";
 import ChatSidebar from "@/components/chat/ChatSidebar";
 import ChatMessages from "@/components/chat/ChatMessages";
 import ChatInput from "@/components/chat/ChatInput";
+import TypingIndicator from "@/components/chat/TypingIndicator";
 import { User } from "@supabase/supabase-js";
 import { Menu } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -34,6 +35,7 @@ export default function ChatPage() {
   const [currentChat, setCurrentChat] = useState<Chat | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [loading, setLoading] = useState(false);
+  const [isTyping, setIsTyping] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -211,8 +213,28 @@ export default function ChatPage() {
     if (!currentChat || !user) return;
 
     setLoading(true);
+    
+    // Add user message locally first for immediate feedback
+    const tempUserMessage: Message = {
+      id: crypto.randomUUID(),
+      chat_id: currentChat.id,
+      role: "user",
+      content,
+      created_at: new Date().toISOString(),
+    };
+    setMessages([...messages, tempUserMessage]);
+
+    // Create temp AI message for streaming
+    const tempAIMessage: Message = {
+      id: crypto.randomUUID(),
+      chat_id: currentChat.id,
+      role: "assistant",
+      content: "",
+      created_at: new Date().toISOString(),
+    };
+
     try {
-      // Add user message
+      // Save user message to database
       const { data: userMessage, error: userError } = await supabase
         .from("messages")
         .insert([
@@ -226,43 +248,126 @@ export default function ChatPage() {
         .single();
 
       if (userError) throw userError;
-      setMessages([...messages, userMessage as Message]);
+      
+      // Replace temp message with real one
+      setMessages((prev) => prev.map(msg => 
+        msg.id === tempUserMessage.id ? userMessage as Message : msg
+      ));
 
-      // Simulate AI response (replace with actual AI API call)
-      setTimeout(async () => {
-        const aiResponse = "I'm a simulated AI response. Integrate with your preferred AI API for real responses!";
-        
-        const { data: assistantMessage, error: assistantError } = await supabase
-          .from("messages")
-          .insert([
-            {
-              chat_id: currentChat.id,
-              role: "assistant",
-              content: aiResponse,
-            },
-          ])
-          .select()
-          .single();
+      // Prepare messages for AI (last 10 messages for context)
+      const contextMessages = messages.slice(-10).map(msg => ({
+        role: msg.role,
+        content: msg.content
+      }));
+      contextMessages.push({ role: "user", content });
 
-        if (assistantError) throw assistantError;
-        
-        setMessages((prev) => [...prev, assistantMessage as Message]);
-        
-        // Update chat title if it's still "New Chat"
-        if (currentChat.title === "New Chat") {
-          const newTitle = content.slice(0, 30) + (content.length > 30 ? "..." : "");
-          await renameChat(currentChat.id, newTitle);
+      // Create temp AI message for streaming
+      const tempAIMessage: Message = {
+        id: crypto.randomUUID(),
+        chat_id: currentChat.id,
+        role: "assistant",
+        content: "",
+        created_at: new Date().toISOString(),
+      };
+      setMessages((prev) => [...prev, tempAIMessage]);
+      setIsTyping(true);
+
+      // Call AI edge function with streaming
+      const response = await fetch(
+        `https://adurodjrvnmfonqkifvm.supabase.co/functions/v1/chat-with-ai`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${(await supabase.auth.getSession()).data.session?.access_token}`,
+          },
+          body: JSON.stringify({ messages: contextMessages }),
         }
-        
-        setLoading(false);
-      }, 1000);
+      );
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error || "Failed to get AI response");
+      }
+
+      const reader = response.body?.getReader();
+      const decoder = new TextDecoder();
+      let aiResponseContent = "";
+
+      if (reader) {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          const chunk = decoder.decode(value);
+          const lines = chunk.split('\n');
+          
+          for (const line of lines) {
+            if (line.startsWith('data: ')) {
+              const data = line.slice(6);
+              if (data === '[DONE]') continue;
+              
+              try {
+                const parsed = JSON.parse(data);
+                const content = parsed.choices?.[0]?.delta?.content;
+                if (content) {
+                  aiResponseContent += content;
+                  // Update the temp AI message with streaming content
+                  setMessages((prev) => prev.map(msg => 
+                    msg.id === tempAIMessage.id 
+                      ? { ...msg, content: aiResponseContent }
+                      : msg
+                  ));
+                }
+              } catch (e) {
+                // Skip invalid JSON
+              }
+            }
+          }
+        }
+      }
+
+      // Save complete AI response to database
+      const { data: assistantMessage, error: assistantError } = await supabase
+        .from("messages")
+        .insert([
+          {
+            chat_id: currentChat.id,
+            role: "assistant",
+            content: aiResponseContent,
+          },
+        ])
+        .select()
+        .single();
+
+      if (assistantError) throw assistantError;
+      
+      // Replace temp AI message with real one
+      setMessages((prev) => prev.map(msg => 
+        msg.id === tempAIMessage.id ? assistantMessage as Message : msg
+      ));
+      
+      // Update chat title if it's still "New Chat"
+      if (currentChat.title === "New Chat") {
+        const newTitle = content.slice(0, 30) + (content.length > 30 ? "..." : "");
+        await renameChat(currentChat.id, newTitle);
+      }
+      
+      setIsTyping(false);
+      setLoading(false);
     } catch (error: any) {
+      console.error("Error sending message:", error);
       toast({
         title: "Error",
         description: error.message || "Failed to send message",
         variant: "destructive",
       });
+      setIsTyping(false);
       setLoading(false);
+      // Remove the temp messages on error
+      setMessages((prev) => prev.filter(msg => 
+        msg.id !== tempUserMessage.id
+      ));
     }
   };
 
@@ -325,7 +430,10 @@ export default function ChatPage() {
               </div>
             </div>
           ) : (
-            <ChatMessages messages={messages} />
+            <>
+              <ChatMessages messages={messages} />
+              {isTyping && <TypingIndicator />}
+            </>
           )}
           <div ref={messagesEndRef} />
         </div>
